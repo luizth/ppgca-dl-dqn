@@ -1,6 +1,8 @@
 import gymnasium as gym
 import numpy as np
 import wandb
+import os
+from dotenv import load_dotenv
 
 from network import DQN, CNN, MLP
 from agent import DeepQLearning
@@ -9,9 +11,11 @@ from pre_processing import ImagePreprocessor
 import ray
 import config
 
+# Load environment variables from .env file
+load_dotenv()
 
 ray.init(
-    num_cpus=20,
+    num_cpus=int(os.getenv("RAY_NUM_CPUS", "20")),
     runtime_env={"working_dir": "."}  # Use current dir directly, no packaging
 )
 
@@ -21,9 +25,9 @@ def run_job(config: config.JobConfig):
     # Start a new wandb run to track this script.
     run = wandb.init(
         # Set the wandb entity where your project will be logged (generally your team name).
-        entity="luizthomasini-unisinos",
+        entity=os.getenv("WANDB_ENTITY"),
         # Set the wandb project where this run will be logged.
-        project="DQN-experiments",
+        project=os.getenv("WANDB_PROJECT"),
         # Set the name of the run, which is used to identify this run in the wandb app.
         name=config.name,
         # Track hyperparameters and run metadata.
