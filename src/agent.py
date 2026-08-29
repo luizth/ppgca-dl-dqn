@@ -82,6 +82,7 @@ class DeepQLearning(QLearning):
 
         # Store steps taken and current state for single-step training
         self._number_of_steps_taken_in_episode = 0
+        self._global_step = 0
         self._current_state, _ = self._env.reset()
 
     def reset(self):
@@ -93,6 +94,9 @@ class DeepQLearning(QLearning):
         self.optimizer = optim.SGD(self.Q.parameters(), lr=self.learning_rate)
         # Reset current state
         self._current_state, _ = self._env.reset()
+        # Reset counters
+        self._number_of_steps_taken_in_episode = 0
+        self._global_step = 0
 
     def _update_Q_target(self):
         self.Q_target = self.Q.copy()
@@ -200,6 +204,14 @@ class DeepQLearning(QLearning):
 
         # Increment step counter
         self._number_of_steps_taken_in_episode += 1
+        self._global_step += 1
+
+        # Update epsilon
+        self.decay_exploration_rate()
+
+        # Every C steps we update target Q
+        if self._global_step % self.C == 0:
+            self._update_Q_target()
 
         # Update current state
         if done:
@@ -209,13 +221,6 @@ class DeepQLearning(QLearning):
             return losses, reward, _episode_steps, self.exploration_rate, done
         else:
             self._current_state = next_state
-
-        # Update epsilon
-        self.decay_exploration_rate()
-
-        # Every C steps we update target Q
-        if self._number_of_steps_taken_in_episode % self.C == 0:
-            self._update_Q_target()
 
         return losses, reward, self._number_of_steps_taken_in_episode, self.exploration_rate, done
 
