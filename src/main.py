@@ -1,5 +1,6 @@
 import gymnasium as gym
 import numpy as np
+import torch
 import wandb
 import os
 from dotenv import load_dotenv
@@ -104,6 +105,11 @@ def run_job(config: config.JobConfig):
         )
 
     else:
+        # Set frame preprocessor
+        m = 4  # Number of frames to stack to conv net
+        state_dim = 84
+        preprocessor = ImagePreprocessor(m=m, frame_size=state_dim)
+
         # Network - we use a ConvNet + MLP as Q-network
         # CNN to process image input
         cnn = CNN(
@@ -114,24 +120,19 @@ def run_job(config: config.JobConfig):
             strides=[4, 2, 1],
         )
 
+        with torch.no_grad():
+            n_flat = cnn(torch.zeros(1, m, state_dim, state_dim)).flatten(1).shape[1]
+
         # MLP to process features from CNN
         mlp = MLP(
-            in_features=64 * 7 * 7,  # Assuming input image size after CNN layers
+            in_features=n_flat,
             out_features=env.action_space.n,
             hidden_layers=1,
             hidden_units=[512],
         )
 
-        # Set frame preprocessor
-        m = 4  # Number of frames to stack to conv net
-        state_dim = 84
-        preprocessor = ImagePreprocessor(m=m, frame_size=state_dim)
-
         # DQN Network
-        net = DQN(
-            cnn=cnn,
-            mlp=mlp,
-        )
+        net = DQN(cnn=cnn, mlp=mlp)
 
     # Agent
     agent = DeepQLearning(
