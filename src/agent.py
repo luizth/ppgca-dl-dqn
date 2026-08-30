@@ -145,7 +145,7 @@ class DeepQLearning(QLearning):
             state_features = exp.state
             next_state_features = exp.next_state
 
-            # Calculate TD target
+            # Calculate TD target - bootstrap
             with torch.no_grad(): # No need to track gradients for target calculation
                 if done:
                     td_target = torch.tensor(reward, dtype=torch.float32)
@@ -184,7 +184,7 @@ class DeepQLearning(QLearning):
         action = self.choose_action(state_features)
 
         # Step
-        next_state, reward, done, info, _ = self._env.step(action)
+        next_state, reward, done, trunc, info = self._env.step(action)
 
         # Clip negative reward at -1, positive reward at 1
         reward = -1.0 if reward < 0 else (1.0 if reward > 0 else 0.0)
@@ -214,15 +214,15 @@ class DeepQLearning(QLearning):
             self._update_Q_target()
 
         # Update current state
-        if done:
+        if done or trunc:
             _episode_steps = self._number_of_steps_taken_in_episode
             self._current_state, _ = self._env.reset()
             self._number_of_steps_taken_in_episode = 0
-            return losses, reward, _episode_steps, self.exploration_rate, done
+            return losses, reward, _episode_steps, self.exploration_rate, True  # done
         else:
             self._current_state = next_state
 
-        return losses, reward, self._number_of_steps_taken_in_episode, self.exploration_rate, done
+        return losses, reward, self._number_of_steps_taken_in_episode, self.exploration_rate, False  # done
 
     def train(
             self,
@@ -244,7 +244,7 @@ class DeepQLearning(QLearning):
                 action = self.choose_action(state_features)
 
                 # Step
-                next_state, reward, done, info, _ = self._env.step(action)
+                next_state, reward, done, trunc, info = self._env.step(action)
 
                 # Build next state representation
                 next_state_features = self.encode(next_state, self.state_dim)
