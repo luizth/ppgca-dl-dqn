@@ -51,11 +51,9 @@ class DeepQLearning(QLearning):
 
         # State Repr Encoder (ϕ phi)
         if isinstance(env.observation_space, gym.spaces.Discrete):
-            self.encode: Callable[[State, State_Dim], State_Features] = DiscreteOneHot.encode
-            self.state_dim = env.observation_space.n
+            self.encoder = DiscreteOneHot(env.observation_space)
         elif isinstance(env.observation_space, gym.spaces.Box):
-            self.encode: Callable[[State, State_Dim], State_Features] = ContinuousNormalized.encode
-            self.state_dim = env.observation_space.shape[0]
+            self.encoder = ContinuousNormalized(env.observation_space)
         else:
             raise NotImplementedError(f"State encoding not implemented for this type of state space ({type(env.observation_space)}).")
 
@@ -178,7 +176,7 @@ class DeepQLearning(QLearning):
             self._current_state = self._env.render()
             state_features = self.preprocessor.get_state_tensor(self._current_state)
         else:
-            state_features = self.encode(self._current_state, self.state_dim)
+            state_features = self.encoder.encode(self._current_state)
 
         # Choose action based on current state
         action = self.choose_action(state_features)
@@ -194,7 +192,7 @@ class DeepQLearning(QLearning):
             next_state = self._env.render()
             next_state_features = self.preprocessor.get_state_tensor(next_state)
         else:
-            next_state_features = self.encode(next_state, self.state_dim)
+            next_state_features = self.encoder.encode(next_state)
 
         # Store experience
         self.eb.add(Experience(state_features, action, reward, next_state_features, done))
@@ -238,7 +236,7 @@ class DeepQLearning(QLearning):
             while i <= max_number_of_steps and not done:
 
                 # Build state representation
-                state_features = self.encode(state, self.state_dim)
+                state_features = self.encoder.encode(state)
 
                 # Choose action based on current state
                 action = self.choose_action(state_features)
@@ -247,7 +245,7 @@ class DeepQLearning(QLearning):
                 next_state, reward, done, trunc, info = self._env.step(action)
 
                 # Build next state representation
-                next_state_features = self.encode(next_state, self.state_dim)
+                next_state_features = self.encoder.encode(next_state)
 
                 # Store experience
                 self.eb.add(Experience(state_features, action, reward, next_state_features, done))
