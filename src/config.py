@@ -9,10 +9,13 @@ class JobConfig:
     lr: float
     exploration_decay: float
     use_conv: bool
-    name: str = str(uuid.uuid4())[:8]
+    name: str
     arch: str = "DQN_Original"
     optim: str = "SGD"
 
+    def __post_init__(self):
+        if not self.name:
+            self.name = str(uuid.uuid4())[:8]
 
 def get():
     return [
