@@ -104,8 +104,9 @@ class ImagePreprocessor:
         # Convert to float and normalize to [0, 1]
         state = state.astype(np.float32) / 255.0
 
-        # Convert to PyTorch tensor and add batch dimension
-        state_tensor = torch.from_numpy(state).unsqueeze(0)
+        # Convert to PyTorch tensor (m, 84, 84) -> no batch is the standard for the network
+        # batch dimension is added later when forwarding
+        state_tensor = torch.from_numpy(state)
 
         return state_tensor
 
