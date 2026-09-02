@@ -11,12 +11,12 @@ def weights_init(m):
     Descrição da inicialização de pesos
 
     Q-values na inicializacao:
-    uniform(-1,1) atual : [154367.34  77755.40]
-    He/Kaiming proposto : [     1.24      0.11]
+    uniform(-1,1) antigo    : [154367.34  77755.40]
+    He/Kaiming atual        : [     1.24      0.11]
 
     E treinando de fato, 25 passos com lr=1e-4:
-    uniform(-1,1) atual    loss=nan         |peso|max=nan      NaN/Inf=True
-    He/Kaiming proposto    loss=0.001809    |peso|max=0.1531   NaN/Inf=False
+    uniform(-1,1) antigo    loss=nan         |peso|max=nan      NaN/Inf=True
+    He/Kaiming atual        loss=0.001809    |peso|max=0.1531   NaN/Inf=False
     """
     # He/Kaiming é o apropriado para as ReLUs que a rede usa
     if isinstance(m, (nn.Conv2d, nn.Linear)):
