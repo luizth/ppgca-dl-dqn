@@ -37,6 +37,7 @@ def run_job(config: config.JobConfig):
             "episodes": config.eps,
             "optim": config.optim,
             "learning_rate": config.lr,
+            "reward_clip": config.reward_clip,
         },
     )
 
@@ -148,6 +149,7 @@ def run_job(config: config.JobConfig):
         min_exploration_rate=0.1,
         exploration_decay=config.exploration_decay,
         preprocessor=preprocessor,
+        reward_clip=config.reward_clip,
     )
 
     # Reset

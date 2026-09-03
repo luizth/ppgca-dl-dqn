@@ -12,6 +12,7 @@ class JobConfig:
     name: str
     arch: str = "DQN_Original"
     optim: str = "SGD"
+    reward_clip: bool = True
 
     def __post_init__(self):
         if not self.name:

@@ -35,7 +35,8 @@ class DeepQLearning(QLearning):
             exploration_rate: float = 1.0,  # Exploration rate - epsilon
             min_exploration_rate: float = 0.1,
             exploration_decay: float = 0.99,
-            preprocessor: ImagePreprocessor = None,):
+            preprocessor: ImagePreprocessor = None,
+            reward_clip: bool = True,):
 
         super().__init__(
             number_of_states,
@@ -58,6 +59,12 @@ class DeepQLearning(QLearning):
             raise NotImplementedError(f"State encoding not implemented for this type of state space ({type(env.observation_space)}).")
 
         self.preprocessor = preprocessor
+
+        # Clipping de recompensa (Mnih et al. 2015). O paper o introduz para
+        # usar um mesmo learning rate nos 49 jogos, cujas escalas de pontuacao
+        # variam muito. Treinando uma rede por ambiente essa premissa nao vale,
+        # e no LunarLander o clip apaga o +-100 do pouso.
+        self.reward_clip = reward_clip
 
         # Q-Value Model
         self.Q = Q_network
@@ -176,7 +183,9 @@ class DeepQLearning(QLearning):
         next_state, reward, done, trunc, info = self._env.step(action)
 
         # Clip reward for learning
-        if self._env.spec.id in ["LunarLander-v2", "LunarLander-v3"]:
+        if not self.reward_clip:
+            reward_clip = reward
+        elif self._env.spec.id in ["LunarLander-v2", "LunarLander-v3"]:
             reward_clip = np.clip(reward, -1.0, 1.0)  # distinguish landing from flying
         else:
             # Reward signal (Mnih et al. 2015)
