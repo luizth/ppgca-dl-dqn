@@ -36,7 +36,8 @@ class DeepQLearning(QLearning):
             min_exploration_rate: float = 0.1,
             exploration_decay: float = 0.99,
             preprocessor: ImagePreprocessor = None,
-            reward_clip: bool = True,):
+            reward_clip: bool = True,
+            action_repeat: int = 1,):
 
         super().__init__(
             number_of_states,
@@ -65,6 +66,19 @@ class DeepQLearning(QLearning):
         # variam muito. Treinando uma rede por ambiente essa premissa nao vale,
         # e no LunarLander o clip apaga o +-100 do pouso.
         self.reward_clip = reward_clip
+
+        # Repeticao de acao (k). A exploracao epsilon-greedy sorteia uma acao
+        # nova a cada passo, e num ambiente como o MountainCar os sorteios se
+        # cancelam: o carro so treme no fundo do vale. Segurar a acao
+        # exploratoria por k passos torna a exploracao temporalmente
+        # correlacionada. Medido com politica aleatoria, limite de 200 passos:
+        # k=1 -> 0/500 chegadas ao topo, k=20 -> 58/500, k=30 -> 97/500.
+        # O mecanismo e o frame-skipping de Mnih et al. 2015 (k=4), embora la a
+        # motivacao seja custo computacional, nao exploracao.
+        # k=1 reproduz o comportamento anterior.
+        self.action_repeat = action_repeat
+        self._held_action = None
+        self._hold_left = 0
 
         # Q-Value Model
         self.Q = Q_network
@@ -107,15 +121,24 @@ class DeepQLearning(QLearning):
         # Reset counters
         self._number_of_steps_taken_in_episode = 0
         self._global_step = 0
+        # Reset da acao segurada
+        self._held_action = None
+        self._hold_left = 0
 
     def _update_Q_target(self):
         self.Q_target = self.Q.copy()
 
     def choose_action(self, state_features) -> int:
         """Choose an action based on the exploration-exploitation trade-off"""
+        if self._hold_left > 0:
+            # Exploration: ainda segurando a acao exploratoria sorteada antes
+            self._hold_left -= 1
+            return self._held_action
         if random.uniform(0, 1) < self.exploration_rate:
-            # Exploration: choose a random action
-            return np.random.choice(self.actions)
+            # Exploration: choose a random action, e segura por action_repeat passos
+            self._held_action = np.random.choice(self.actions)
+            self._hold_left = self.action_repeat - 1
+            return self._held_action
         else:
             # Exploitation: choose the best action based on Q-values
             q_values = self.Q(state_features.unsqueeze(0))[0]  # add batch dimension for the network
@@ -222,6 +245,8 @@ class DeepQLearning(QLearning):
                 self.preprocessor.reset()  # reset the preprocessor state buffer
             self._current_state, _ = self._env.reset()
             self._number_of_steps_taken_in_episode = 0
+            self._held_action = None
+            self._hold_left = 0  # nao carrega a acao segurada entre episodios
             return losses, reward, _episode_steps, self.exploration_rate, True  # done
         else:
             self._current_state = next_state

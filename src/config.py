@@ -13,6 +13,7 @@ class JobConfig:
     arch: str = "DQN_Original"
     optim: str = "SGD"
     reward_clip: bool = True
+    action_repeat: int = 1  # k: passos que a acao exploratoria e mantida
 
     def __post_init__(self):
         if not self.name:
