@@ -9,18 +9,17 @@ from network import DQN, CNN, MLP
 from agent import DeepQLearning
 from pre_processing import ImagePreprocessor
 
-import ray
 import config
 
 # Load environment variables from .env file
 load_dotenv()
 
-ray.init(
-    num_cpus=int(os.getenv("RAY_NUM_CPUS", "20")),
-    runtime_env={"working_dir": "."}  # Use current dir directly, no packaging
-)
+# O Ray so entra em cena com USE_RAY=1. Com RAY_NUM_CPUS=1 ele nao da
+# paralelismo nenhum (os jobs ja rodam em serie) e o overhead de driver +
+# raylet + object store foi o que estourou a memoria desta maquina.
+USE_RAY = os.getenv("USE_RAY", "0") == "1"
 
-@ray.remote(num_cpus=1)  # allocate 1 core for each job
+
 def run_job(config: config.JobConfig):
 
     # Start a new wandb run to track this script.
@@ -148,7 +147,7 @@ def run_job(config: config.JobConfig):
         exploration_rate=1.0,
         min_exploration_rate=0.1,
         exploration_decay=config.exploration_decay,
-        preprocessor=preprocessor
+        preprocessor=preprocessor,
     )
 
     # Reset
@@ -201,11 +200,22 @@ def run_job(config: config.JobConfig):
     run.finish()
 
 
-configs = config.get()
+if __name__ == "__main__":
 
-futures = [run_job.remote(cfg) for cfg in configs]
-results = ray.get(futures)
+    configs = config.get()
 
-with open("results.txt", "w") as f:
-    for result in results:
-        f.write(f"{result}\n")
+    if USE_RAY:
+        import ray
+
+        ray.init(
+            num_cpus=int(os.getenv("RAY_NUM_CPUS", "20")),
+            runtime_env={"working_dir": "."}  # Use current dir directly, no packaging
+        )
+        run_job_remote = ray.remote(num_cpus=1)(run_job)  # allocate 1 core for each job
+        results = ray.get([run_job_remote.remote(cfg) for cfg in configs])
+    else:
+        results = [run_job(cfg) for cfg in configs]
+
+    with open("results.txt", "w") as f:
+        for result in results:
+            f.write(f"{result}\n")
