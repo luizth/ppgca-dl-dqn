@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import wandb
 import os
+from dataclasses import asdict
 from dotenv import load_dotenv
 
 from network import DQN, CNN, MLP
@@ -14,10 +15,12 @@ import config
 # Load environment variables from .env file
 load_dotenv()
 
-# O Ray so entra em cena com USE_RAY=1. Com RAY_NUM_CPUS=1 ele nao da
-# paralelismo nenhum (os jobs ja rodam em serie) e o overhead de driver +
-# raylet + object store foi o que estourou a memoria desta maquina.
+# O Ray é ativado com USE_RAY=1. Com RAY_NUM_CPUS=1 não há paralelismo
+# mas produz o overhead de driver + raylet + object store
 USE_RAY = os.getenv("USE_RAY", "0") == "1"
+OUT_DIR = os.getenv("OUT_DIR", "out")
+
+os.makedirs(OUT_DIR, exist_ok=True)
 
 
 def run_job(config: config.JobConfig):
@@ -163,6 +166,10 @@ def run_job(config: config.JobConfig):
     # Global step counter
     global_step = 0
 
+    # Historico por episodio, para o resumo devolvido ao final
+    episode_rewards = []
+    episode_lengths = []
+
     # Train the agent
     for i in range(config.eps):
 
@@ -196,12 +203,42 @@ def run_job(config: config.JobConfig):
             "episode_reward": episode_reward
         })
 
+        episode_rewards.append(episode_reward)
+        episode_lengths.append(steps)
+
         # Update tqdm progress bar
         # pbar.update(1)
         # pbar.set_postfix({"reward": f"{episode_reward:.2f}"})
 
+    # Salva os pesos da rede Q aprendida
+    checkpoint = os.path.join(OUT_DIR, f"{config.name}.pt")
+    torch.save(
+        {
+            "state_dict": agent.Q.state_dict(),
+            "job": asdict(config),
+            "in_size": in_size,
+            "number_of_actions": int(env.action_space.n),
+            "episodes_trained": config.eps,
+        },
+        checkpoint,
+    )
+
+    wandb_url = run.url
+
     # Finish the run and upload any remaining data.
     run.finish()
+    env.close()
+
+    last = slice(-100, None)  # ultimos 100 episodios
+    return {
+        "name": config.name,
+        "ds": config.ds,
+        "episodes": config.eps,
+        "reward_last_100": float(np.mean(episode_rewards[last])),
+        "steps_last_100": float(np.mean(episode_lengths[last])),
+        "checkpoint": checkpoint,
+        "wandb_url": wandb_url,
+    }
 
 
 if __name__ == "__main__":
@@ -220,6 +257,14 @@ if __name__ == "__main__":
     else:
         results = [run_job(cfg) for cfg in configs]
 
-    with open("results.txt", "w") as f:
-        for result in results:
-            f.write(f"{result}\n")
+    # run_job devolve um resumo por job; antes results.txt so recebia None
+    with open(os.path.join(OUT_DIR, "results.txt"), "w") as f:
+        f.write(f"{'name':38s} {'env':16s} {'eps':>6s} {'reward_100':>11s} {'steps_100':>10s}  checkpoint\n")
+        for r in results:
+            f.write(
+                f"{r['name']:38s} {r['ds']:16s} {r['episodes']:6d} "
+                f"{r['reward_last_100']:11.1f} {r['steps_last_100']:10.1f}  {r['checkpoint']}\n"
+            )
+        f.write("\n")
+        for r in results:
+            f.write(f"{r['name']}: {r['wandb_url']}\n")

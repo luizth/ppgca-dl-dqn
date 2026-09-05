@@ -12,5 +12,11 @@ wheels/
 # Environment variables
 .env
 
+# Out
+out/
+
 # Logs
 wandb/
+
+# Credenciais
+.wandb_api_key
