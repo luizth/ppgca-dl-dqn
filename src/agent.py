@@ -37,7 +37,9 @@ class DeepQLearning(QLearning):
             exploration_decay: float = 0.99,
             preprocessor: ImagePreprocessor = None,
             reward_clip: bool = True,
-            action_repeat: int = 1,):
+            action_repeat: int = 1,  # k=1 one action per step, k>1 hold action for k steps
+            scale_exploration: bool = True,  # epsilon como fracao do tempo explorando
+            ):
 
         super().__init__(
             number_of_states,
@@ -61,22 +63,23 @@ class DeepQLearning(QLearning):
 
         self.preprocessor = preprocessor
 
-        # Clipping de recompensa (Mnih et al. 2015). O paper o introduz para
-        # usar um mesmo learning rate nos 49 jogos, cujas escalas de pontuacao
-        # variam muito. Treinando uma rede por ambiente essa premissa nao vale,
-        # e no LunarLander o clip apaga o +-100 do pouso.
+        # Clipping de recompensa (Mnih et al. 2015)
+        # e.g. no LunarLander não usamos o clip para preservar o +-100 do pouso.
         self.reward_clip = reward_clip
 
-        # Repeticao de acao (k). A exploracao epsilon-greedy sorteia uma acao
-        # nova a cada passo, e num ambiente como o MountainCar os sorteios se
-        # cancelam: o carro so treme no fundo do vale. Segurar a acao
-        # exploratoria por k passos torna a exploracao temporalmente
-        # correlacionada. Medido com politica aleatoria, limite de 200 passos:
-        # k=1 -> 0/500 chegadas ao topo, k=20 -> 58/500, k=30 -> 97/500.
-        # O mecanismo e o frame-skipping de Mnih et al. 2015 (k=4), embora la a
-        # motivacao seja custo computacional, nao exploracao.
-        # k=1 reproduz o comportamento anterior.
+        # Repeticao de ação (k) / frame-skipping (Mnih et al. 2015; Bellemare et al. 2012 (k=4))
+        # A exploracao epsilon-greedy sorteia uma acao nova a cada passo.
+        # Em num ambiente como o MountainCar os sorteios se cancelam:
+        # o carro so treme no fundo do vale. Segurar a acao exploratoria
+        # por k passos torna a exploracao temporalmente correlacionada.
+
+        # e.g. politica aleatória, limite de 200 passos, chegadas ao topo:
+        # k=1 -> 0/500, k=20 -> 58/500, k=30 -> 97/500.
+
+        # O mecanismo tem vantagem: no custo computacional (menos queries a rede Q);
+        # e consistência na exploração (menos ruído em ações aleatórias)
         self.action_repeat = action_repeat
+        self.scale_exploration = scale_exploration
         self._held_action = None
         self._hold_left = 0
 
@@ -128,13 +131,62 @@ class DeepQLearning(QLearning):
     def _update_Q_target(self):
         self.Q_target = self.Q.copy()
 
+    def _exploration_trigger_rate(self) -> float:
+        """
+        Taxa de gatilho para exploração
+
+            p = ε / (k * (1 - ε) + ε)
+
+        O numerador é o que queremos (ε). O denominador é "divide por k",
+        o "k * (1 - ε)" é a divisão, e o "+ ε" é o ajuste fino que conta
+        os passos gulosos que acontecem entre os blocos, que também
+        consomem tempo.
+
+        ε: epsilon, taxa de exploração (exploration_rate)
+        k: action_repeat, passos que a acao exploratoria e mantida
+
+        Se ε=0.1 na definição, 10% dos passos deveriam ser exploratórios.
+        Quando k>1, criamos blocos de k passos exploratórios, que melhora
+        a exploração no caso Mountain Car, porém aumenta o tempo explorando.
+        Com ε=0.1 e k=30: 77% dos passos saem exploratorios, nao 10%.
+
+        Sorteando com probabilidade p, cada ciclo tem p*k passos exploratorios
+        em p*k + (1 - p) passos totais, entao a fracao do tempo explorando e
+
+            f = k*p / (1 - p + k*p)
+
+        Igualando f a epsilon e isolando p:
+
+            p = eps / (k*(1 - eps) + eps)
+
+        Com k=1 (bloco de 1 passo, sem repetição) -> p = ε. O ε-greedy normal.
+        Com ε=1 (explorar o tempo todo) -> p = 1. Sempre inicia bloco.
+
+        Com scale_exploration=False fica o modo ingênuo, p = eps: o epsilon
+        passa a significar "probabilidade de iniciar um bloco", e a fracao do
+        tempo explorando sobe junto com k.
+
+        No MountainCar, taxa de sucesso no modo ingênuo contra a fracao do tempo explorando:
+        - 1500 episodios, k=4: 0.3% contra 19.2%.
+        - 3000 episodios, k=30: 32.2% contra 88.1%.
+
+        Em resumo: ε diz quanto tempo explorar; p diz com que frequência iniciar,
+        dado que cada bloco dura k passos. Com k>1 -> p > ε, e a fracao do tempo
+        explorando é maior que ε.
+        """
+        eps = self.exploration_rate
+        k = self.action_repeat
+        if not self.scale_exploration:
+            return eps
+        return eps / (k * (1.0 - eps) + eps)
+
     def choose_action(self, state_features) -> int:
         """Choose an action based on the exploration-exploitation trade-off"""
+        # Action repeat: if we are still holding the previous action, return it
         if self._hold_left > 0:
-            # Exploration: ainda segurando a acao exploratoria sorteada antes
             self._hold_left -= 1
             return self._held_action
-        if random.uniform(0, 1) < self.exploration_rate:
+        if random.uniform(0, 1) < self._exploration_trigger_rate():
             # Exploration: choose a random action, e segura por action_repeat passos
             self._held_action = np.random.choice(self.actions)
             self._hold_left = self.action_repeat - 1
@@ -252,79 +304,3 @@ class DeepQLearning(QLearning):
             self._current_state = next_state
 
         return losses, reward, self._number_of_steps_taken_in_episode, self.exploration_rate, False  # done
-
-""" old: def update_Q_network(self):
-
-    Análise:
-
-    dW = o quanto os pesos andaram.
-
-    Pense na rede como um ponto num mapa. Treinar é dar passos com esse ponto.
-    dW é a seta de onde ele estava até onde ele foi parar depois de um passo do ambiente.
-    ||dW|| é só o comprimento dessa seta: a distância percorrida.
-
-    O cosseno = se as duas setas apontam para o mesmo lado.
-    - 1.0 → mesmíssima direção
-    - 0.0 → uma para o norte, outra para o leste
-    - -1.0 → direções opostas
-
-    Deu 0.83: apontam mais ou menos para o mesmo lado, mas torto.
-    Então o laço não erra só na distância - ele vai para um lugar um pouco diferente.
-
-    O 3,4x.
-    32 amigos te dão conselho sobre para onde andar.
-    - Jeito certo (minibatch): você ouve os 32, tira a média, dá um passo.
-    - Jeito do código: você obedece o amigo 1 por inteiro, anda. Aí ouve o amigo 2,
-    do lugar novo, e anda. E assim por diante, 32 vezes.
-
-    No fim você parou 3,4x mais longe, e num ponto meio torto.
-
-    E por que não dá para dizer "é só um learning rate 32x maior"?
-    Porque cada passo muda o chão do próximo.
-    O amigo 5 dá um conselho diferente do que daria se você não tivesse andado antes.
-    Então o total não é 32 x nada, depende de quais amigos calharam de estar no grupo
-    e de onde a rede está naquele momento. Hoje deu 3,4x, amanhã dá outro número.
-
-    É esse o problema: o tamanho do passo vira uma variável escondida
-    que ninguém controla nem consegue prever.
-
-    # 32 atualizações online sequenciais -> errado
-    # além disso, as amostras NÃO vem da mesma rede, porque a cada passo a rede é atualizada,
-    # então o Q_target muda a cada passo, e o Q muda a cada passo.
-    #   sequencial: || dW || = 0.33215
-    #   minibatch real: || dW || = 0.09825
-    #   cosseno entre as direcoes: 0.8287 -> 1.0 = mesma direção
-    for exp in minibatch:
-        action = exp.action
-        reward = exp.reward
-        done = exp.done
-
-        # Those are tensors
-        state_features = exp.state
-        next_state_features = exp.next_state
-
-        # Calculate TD target - bootstrap
-        with torch.no_grad(): # No need to track gradients for target calculation
-            if done:
-                td_target = torch.tensor(reward, dtype=torch.float32)
-            else:
-                next_q_values = self._get_Q_target_values(next_state_features)
-                td_target = torch.tensor(reward, dtype=torch.float32) + self.discount_factor * torch.max(next_q_values)
-
-        # Get the current Q-value prediction
-        q_values = self._get_Q_values(state_features)
-        q_value = q_values[action]
-
-        # Compute loss
-        loss = self.lossfn(td_target, q_value)
-
-        # Backprop
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
-        # Store loss
-        losses.append(loss.item())
-
-    return losses
-"""

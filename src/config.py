@@ -13,6 +13,7 @@ class JobConfig:
     arch: str = "DQN_Original"
     optim: str = "SGD"
     reward_clip: bool = True
+    scale_exploration: bool = True  # epsilon = fracao do tempo explorando
     action_repeat: int = 1  # k: passos que a acao exploratoria e mantida
 
     def __post_init__(self):
@@ -83,6 +84,8 @@ def get():
             lr=0.001,
             exploration_decay=0.99999,
             use_conv=False,
+            scale_exploration=True,
+            action_repeat=10,
         ),
     ]
 
