@@ -75,5 +75,6 @@ Menores
 - [] pre_processing.py:56 — gray_frame = max_frame[1] pega só o canal G, não a luminância que a docstring promete.
 - [x] agent.py:113,119 — choose_action monta grafo de autograd que é descartado; falta torch.no_grad().
 - [] main.py:143 — number_of_states=in_size para espaços Box faz o QLearning.__init__ alocar uma Q-table 4×2 inútil, sobrescrita logo em seguida.
-- [] main.py:206-209 — run_job não retorna nada, então results.txt recebe uma linha None por job. Nenhum env.close(), nenhuma semente fixada.
+- [x] main.py:206-209 — run_job não retorna nada, então results.txt recebe uma linha None por job. Nenhum env.close(), nenhuma semente fixada.
+  Corrigido em três etapas: run_job passou a devolver um resumo por job e o env.close() entrou junto com o salvamento da política; a semente virou JobConfig.seed, aplicada a random, numpy, torch e ao primeiro env.reset() antes da construção da rede.
 - [x] agent.py:157 — self.lossfn(td_target, q_value) está com os argumentos invertidos em relação à convenção (input, target), mas não é bug: verifiquei que o gradiente é idêntico (−6.0 nos dois casos), já que o MSE é simétrico e o autograd propaga pelo argumento target.

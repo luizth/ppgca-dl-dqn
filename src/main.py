@@ -1,5 +1,6 @@
 import gymnasium as gym
 import numpy as np
+import random
 import torch
 import wandb
 import os
@@ -40,6 +41,7 @@ def run_job(config: config.JobConfig):
             "episodes": config.eps,
             "optim": config.optim,
             "learning_rate": config.lr,
+            "seed": config.seed,
             "reward_clip": config.reward_clip,
             "action_repeat": config.action_repeat,
             "scale_exploration": config.scale_exploration,
@@ -85,7 +87,14 @@ def run_job(config: config.JobConfig):
             config.ds,
             render_mode="rgb_array"
         )
-    env.reset()
+    # Sementes. No Gymnasium basta semear o primeiro reset: os resets
+    # seguintes continuam a mesma sequencia. Vem antes da construcao da rede
+    # para que a inicializacao dos pesos tambem seja reprodutivel.
+    random.seed(config.seed)
+    np.random.seed(config.seed)
+    torch.manual_seed(config.seed)
+    env.reset(seed=config.seed)
+    env.action_space.seed(config.seed)
 
     # The input are the state features
     if isinstance(env.observation_space, gym.spaces.Discrete):

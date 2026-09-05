@@ -13,6 +13,7 @@ class JobConfig:
     arch: str = "DQN_Original"
     optim: str = "SGD"
     reward_clip: bool = True
+    seed: int = 0
     scale_exploration: bool = True  # epsilon = fracao do tempo explorando
     action_repeat: int = 1  # k: passos que a acao exploratoria e mantida
 
