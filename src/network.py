@@ -7,14 +7,28 @@ import torch.nn.init as init
 
 # Define the weight initialization function
 def weights_init(m):
-    if isinstance(m, nn.Conv2d):
-        torch.nn.init.uniform_(m.weight, a=-1.0, b=1.0)
+    """
+    Descrição da inicialização de pesos
+
+    Q-values na inicializacao:
+    uniform(-1,1) antigo    : [154367.34  77755.40]
+    He/Kaiming atual        : [     1.24      0.11]
+
+    E treinando de fato, 25 passos com lr=1e-4:
+    uniform(-1,1) antigo    loss=nan         |peso|max=nan      NaN/Inf=True
+    He/Kaiming atual        loss=0.001809    |peso|max=0.1531   NaN/Inf=False
+    """
+    # He/Kaiming é o apropriado para as ReLUs que a rede usa
+    if isinstance(m, (nn.Conv2d, nn.Linear)):
+        init.kaiming_uniform_(m.weight, nonlinearity='relu')
         if m.bias is not None:
-            torch.nn.init.constant_(m.bias, 0)
-    elif isinstance(m, nn.Linear):
-        torch.nn.init.uniform_(m.weight, a=-1.0, b=1.0)
-        if m.bias is not None:
-            torch.nn.init.constant_(m.bias, 0)
+            init.constant_(m.bias, 0.0)
+
+    # Uniform não é o apropriado
+    # if isinstance(m, (nn.Conv2d, nn.Linear)):
+    #     torch.nn.init.uniform_(m.weight, a=-1.0, b=1.0)
+    #     if m.bias is not None:
+    #         torch.nn.init.constant_(m.bias, 0)
 
 
 class CNN(nn.Module):
@@ -94,7 +108,8 @@ class DQN(nn.Module):
             nn.Flatten(),
             mlp
         )
-        self.net.apply(weights_init)
+        # CNN and MLP are already initialized, so we don't need to apply weights_init here.
+        # self.net.apply(weights_init)
 
     def copy(self):
         return copy.deepcopy(self)

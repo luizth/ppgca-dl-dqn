@@ -1,25 +1,29 @@
 import gymnasium as gym
 import numpy as np
+import random
+import torch
 import wandb
 import os
+from dataclasses import asdict
 from dotenv import load_dotenv
 
 from network import DQN, CNN, MLP
 from agent import DeepQLearning
 from pre_processing import ImagePreprocessor
 
-import ray
 import config
 
 # Load environment variables from .env file
 load_dotenv()
 
-ray.init(
-    num_cpus=int(os.getenv("RAY_NUM_CPUS", "20")),
-    runtime_env={"working_dir": "."}  # Use current dir directly, no packaging
-)
+# O Ray é ativado com USE_RAY=1. Com RAY_NUM_CPUS=1 não há paralelismo
+# mas produz o overhead de driver + raylet + object store
+USE_RAY = os.getenv("USE_RAY", "0") == "1"
+OUT_DIR = os.getenv("OUT_DIR", "out")
 
-@ray.remote(num_cpus=1)  # allocate 1 core for each job
+os.makedirs(OUT_DIR, exist_ok=True)
+
+
 def run_job(config: config.JobConfig):
 
     # Start a new wandb run to track this script.
@@ -37,6 +41,10 @@ def run_job(config: config.JobConfig):
             "episodes": config.eps,
             "optim": config.optim,
             "learning_rate": config.lr,
+            "seed": config.seed,
+            "reward_clip": config.reward_clip,
+            "action_repeat": config.action_repeat,
+            "scale_exploration": config.scale_exploration,
         },
     )
 
@@ -79,7 +87,14 @@ def run_job(config: config.JobConfig):
             config.ds,
             render_mode="rgb_array"
         )
-    env.reset()
+    # Sementes. No Gymnasium basta semear o primeiro reset: os resets
+    # seguintes continuam a mesma sequencia. Vem antes da construcao da rede
+    # para que a inicializacao dos pesos tambem seja reprodutivel.
+    random.seed(config.seed)
+    np.random.seed(config.seed)
+    torch.manual_seed(config.seed)
+    env.reset(seed=config.seed)
+    env.action_space.seed(config.seed)
 
     # The input are the state features
     if isinstance(env.observation_space, gym.spaces.Discrete):
@@ -104,6 +119,11 @@ def run_job(config: config.JobConfig):
         )
 
     else:
+        # Set frame preprocessor
+        m = 4  # Number of frames to stack to conv net
+        state_dim = 84
+        preprocessor = ImagePreprocessor(m=m, frame_size=state_dim)
+
         # Network - we use a ConvNet + MLP as Q-network
         # CNN to process image input
         cnn = CNN(
@@ -114,24 +134,19 @@ def run_job(config: config.JobConfig):
             strides=[4, 2, 1],
         )
 
+        with torch.no_grad():
+            n_flat = cnn(torch.zeros(1, m, state_dim, state_dim)).flatten(1).shape[1]
+
         # MLP to process features from CNN
         mlp = MLP(
-            in_features=64 * 7 * 7,  # Assuming input image size after CNN layers
+            in_features=n_flat,
             out_features=env.action_space.n,
             hidden_layers=1,
             hidden_units=[512],
         )
 
-        # Set frame preprocessor
-        m = 4  # Number of frames to stack to conv net
-        state_dim = 84
-        preprocessor = ImagePreprocessor(m=m, frame_size=state_dim)
-
         # DQN Network
-        net = DQN(
-            cnn=cnn,
-            mlp=mlp,
-        )
+        net = DQN(cnn=cnn, mlp=mlp)
 
     # Agent
     agent = DeepQLearning(
@@ -147,7 +162,10 @@ def run_job(config: config.JobConfig):
         exploration_rate=1.0,
         min_exploration_rate=0.1,
         exploration_decay=config.exploration_decay,
-        preprocessor=preprocessor
+        preprocessor=preprocessor,
+        reward_clip=config.reward_clip,
+        action_repeat=config.action_repeat,
+        scale_exploration=config.scale_exploration,
     )
 
     # Reset
@@ -158,6 +176,10 @@ def run_job(config: config.JobConfig):
 
     # Global step counter
     global_step = 0
+
+    # Historico por episodio, para o resumo devolvido ao final
+    episode_rewards = []
+    episode_lengths = []
 
     # Train the agent
     for i in range(config.eps):
@@ -192,19 +214,68 @@ def run_job(config: config.JobConfig):
             "episode_reward": episode_reward
         })
 
+        episode_rewards.append(episode_reward)
+        episode_lengths.append(steps)
+
         # Update tqdm progress bar
         # pbar.update(1)
         # pbar.set_postfix({"reward": f"{episode_reward:.2f}"})
 
+    # Salva os pesos da rede Q aprendida
+    checkpoint = os.path.join(OUT_DIR, f"{config.name}.pt")
+    torch.save(
+        {
+            "state_dict": agent.Q.state_dict(),
+            "job": asdict(config),
+            "in_size": in_size,
+            "number_of_actions": int(env.action_space.n),
+            "episodes_trained": config.eps,
+        },
+        checkpoint,
+    )
+
+    wandb_url = run.url
+
     # Finish the run and upload any remaining data.
     run.finish()
+    env.close()
+
+    last = slice(-100, None)  # ultimos 100 episodios
+    return {
+        "name": config.name,
+        "ds": config.ds,
+        "episodes": config.eps,
+        "reward_last_100": float(np.mean(episode_rewards[last])),
+        "steps_last_100": float(np.mean(episode_lengths[last])),
+        "checkpoint": checkpoint,
+        "wandb_url": wandb_url,
+    }
 
 
-configs = config.get()
+if __name__ == "__main__":
 
-futures = [run_job.remote(cfg) for cfg in configs]
-results = ray.get(futures)
+    configs = config.get()
 
-with open("results.txt", "w") as f:
-    for result in results:
-        f.write(f"{result}\n")
+    if USE_RAY:
+        import ray
+
+        ray.init(
+            num_cpus=int(os.getenv("RAY_NUM_CPUS", "20")),
+            runtime_env={"working_dir": "."}  # Use current dir directly, no packaging
+        )
+        run_job_remote = ray.remote(num_cpus=1)(run_job)  # allocate 1 core for each job
+        results = ray.get([run_job_remote.remote(cfg) for cfg in configs])
+    else:
+        results = [run_job(cfg) for cfg in configs]
+
+    # run_job devolve um resumo por job; antes results.txt so recebia None
+    with open(os.path.join(OUT_DIR, "results.txt"), "w") as f:
+        f.write(f"{'name':38s} {'env':16s} {'eps':>6s} {'reward_100':>11s} {'steps_100':>10s}  checkpoint\n")
+        for r in results:
+            f.write(
+                f"{r['name']:38s} {r['ds']:16s} {r['episodes']:6d} "
+                f"{r['reward_last_100']:11.1f} {r['steps_last_100']:10.1f}  {r['checkpoint']}\n"
+            )
+        f.write("\n")
+        for r in results:
+            f.write(f"{r['name']}: {r['wandb_url']}\n")

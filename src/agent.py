@@ -35,7 +35,11 @@ class DeepQLearning(QLearning):
             exploration_rate: float = 1.0,  # Exploration rate - epsilon
             min_exploration_rate: float = 0.1,
             exploration_decay: float = 0.99,
-            preprocessor: ImagePreprocessor = None,):
+            preprocessor: ImagePreprocessor = None,
+            reward_clip: bool = True,
+            action_repeat: int = 1,  # k=1 one action per step, k>1 hold action for k steps
+            scale_exploration: bool = True,  # epsilon como fracao do tempo explorando
+            ):
 
         super().__init__(
             number_of_states,
@@ -51,15 +55,33 @@ class DeepQLearning(QLearning):
 
         # State Repr Encoder (ϕ phi)
         if isinstance(env.observation_space, gym.spaces.Discrete):
-            self.encode: Callable[[State, State_Dim], State_Features] = DiscreteOneHot.encode
-            self.state_dim = env.observation_space.n
+            self.encoder = DiscreteOneHot(env.observation_space)
         elif isinstance(env.observation_space, gym.spaces.Box):
-            self.encode: Callable[[State, State_Dim], State_Features] = ContinuousNormalized.encode
-            self.state_dim = env.observation_space.shape[0]
+            self.encoder = ContinuousNormalized(env.observation_space)
         else:
             raise NotImplementedError(f"State encoding not implemented for this type of state space ({type(env.observation_space)}).")
 
         self.preprocessor = preprocessor
+
+        # Clipping de recompensa (Mnih et al. 2015)
+        # e.g. no LunarLander não usamos o clip para preservar o +-100 do pouso.
+        self.reward_clip = reward_clip
+
+        # Repeticao de ação (k) / frame-skipping (Mnih et al. 2015; Bellemare et al. 2012 (k=4))
+        # A exploracao epsilon-greedy sorteia uma acao nova a cada passo.
+        # Em num ambiente como o MountainCar os sorteios se cancelam:
+        # o carro so treme no fundo do vale. Segurar a acao exploratoria
+        # por k passos torna a exploracao temporalmente correlacionada.
+
+        # e.g. politica aleatória, limite de 200 passos, chegadas ao topo:
+        # k=1 -> 0/500, k=20 -> 58/500, k=30 -> 97/500.
+
+        # O mecanismo tem vantagem: no custo computacional (menos queries a rede Q);
+        # e consistência na exploração (menos ruído em ações aleatórias)
+        self.action_repeat = action_repeat
+        self.scale_exploration = scale_exploration
+        self._held_action = None
+        self._hold_left = 0
 
         # Q-Value Model
         self.Q = Q_network
@@ -82,6 +104,7 @@ class DeepQLearning(QLearning):
 
         # Store steps taken and current state for single-step training
         self._number_of_steps_taken_in_episode = 0
+        self._global_step = 0
         self._current_state, _ = self._env.reset()
 
     def reset(self):
@@ -91,32 +114,92 @@ class DeepQLearning(QLearning):
         self.Q_target = self._Q_initial.copy()
         # Reset optimizer
         self.optimizer = optim.SGD(self.Q.parameters(), lr=self.learning_rate)
+        # Reset replay buffer
+        self.eb = ExperienceBuffer(self.eb.max_lenght)
+        # Reset preprocessor state buffer if it exists
+        if self.preprocessor is not None:
+            self.preprocessor.reset()
         # Reset current state
         self._current_state, _ = self._env.reset()
+        # Reset counters
+        self._number_of_steps_taken_in_episode = 0
+        self._global_step = 0
+        # Reset da acao segurada
+        self._held_action = None
+        self._hold_left = 0
 
     def _update_Q_target(self):
         self.Q_target = self.Q.copy()
 
-    def _get_Q_values(self, state_features) -> torch.Tensor:
-        return self.Q(state_features).squeeze()
+    def _exploration_trigger_rate(self) -> float:
+        """
+        Taxa de gatilho para exploração
 
-    def _get_Q_target_values(self, state_features) -> torch.Tensor:
-        return self.Q_target(state_features).squeeze()
+            p = ε / (k * (1 - ε) + ε)
+
+        O numerador é o que queremos (ε). O denominador é "divide por k",
+        o "k * (1 - ε)" é a divisão, e o "+ ε" é o ajuste fino que conta
+        os passos gulosos que acontecem entre os blocos, que também
+        consomem tempo.
+
+        ε: epsilon, taxa de exploração (exploration_rate)
+        k: action_repeat, passos que a acao exploratoria e mantida
+
+        Se ε=0.1 na definição, 10% dos passos deveriam ser exploratórios.
+        Quando k>1, criamos blocos de k passos exploratórios, que melhora
+        a exploração no caso Mountain Car, porém aumenta o tempo explorando.
+        Com ε=0.1 e k=30: 77% dos passos saem exploratorios, nao 10%.
+
+        Sorteando com probabilidade p, cada ciclo tem p*k passos exploratorios
+        em p*k + (1 - p) passos totais, entao a fracao do tempo explorando e
+
+            f = k*p / (1 - p + k*p)
+
+        Igualando f a epsilon e isolando p:
+
+            p = eps / (k*(1 - eps) + eps)
+
+        Com k=1 (bloco de 1 passo, sem repetição) -> p = ε. O ε-greedy normal.
+        Com ε=1 (explorar o tempo todo) -> p = 1. Sempre inicia bloco.
+
+        Com scale_exploration=False fica o modo ingênuo, p = eps: o epsilon
+        passa a significar "probabilidade de iniciar um bloco", e a fracao do
+        tempo explorando sobe junto com k.
+
+        No MountainCar, taxa de sucesso no modo ingênuo contra a fracao do tempo explorando:
+        - 1500 episodios, k=4: 0.3% contra 19.2%.
+        - 3000 episodios, k=30: 32.2% contra 88.1%.
+
+        Em resumo: ε diz quanto tempo explorar; p diz com que frequência iniciar,
+        dado que cada bloco dura k passos. Com k>1 -> p > ε, e a fracao do tempo
+        explorando é maior que ε.
+        """
+        eps = self.exploration_rate
+        k = self.action_repeat
+        if not self.scale_exploration:
+            return eps
+        return eps / (k * (1.0 - eps) + eps)
 
     def choose_action(self, state_features) -> int:
         """Choose an action based on the exploration-exploitation trade-off"""
-        if random.uniform(0, 1) < self.exploration_rate:
-            # Exploration: choose a random action
-            return np.random.choice(self.actions)
+        # Action repeat: if we are still holding the previous action, return it
+        if self._hold_left > 0:
+            self._hold_left -= 1
+            return self._held_action
+        if random.uniform(0, 1) < self._exploration_trigger_rate():
+            # Exploration: choose a random action, e segura por action_repeat passos
+            self._held_action = np.random.choice(self.actions)
+            self._hold_left = self.action_repeat - 1
+            return self._held_action
         else:
             # Exploitation: choose the best action based on Q-values
-            q_values = self.Q(state_features)
+            q_values = self.Q(state_features.unsqueeze(0))[0]  # add batch dimension for the network
             actions_i = np.random.choice( np.flatnonzero(q_values == q_values.max()) )
             return self.actions[actions_i]
 
     def choose_action_greedy(self, state_features) -> int:
         """Choose an action based on the Q-values"""
-        q_values = self.Q(state_features)
+        q_values = self.Q(state_features.unsqueeze(0))[0]  # add batch dimension for the network
         actions_i = np.random.choice( np.flatnonzero(q_values == q_values.max()) )
         return self.actions[actions_i]
 
@@ -132,128 +215,92 @@ class DeepQLearning(QLearning):
 
         minibatch = self.eb.sample(self.batch_size)
 
-        for exp in minibatch:
-            action = exp.action
-            reward = exp.reward
-            done = exp.done
+        # Empilhar o minibatch em tensores para processamento em lote
+        # torch.stack will create a tensor of shape (batch_size [32], 1, 4, 84, 84)
+        states      = torch.stack([e.state for e in minibatch])
+        next_states = torch.stack([e.next_state for e in minibatch])
+        actions     = torch.tensor([e.action for e in minibatch])
+        rewards     = torch.tensor([e.reward for e in minibatch], dtype=torch.float32)
+        dones       = torch.tensor([e.done for e in minibatch], dtype=torch.float32)
 
-            # Those are tensors
-            state_features = exp.state
-            next_state_features = exp.next_state
+        # DQN - um passo de gradiente sobre a média do minibatch
+        with torch.no_grad():
+            targets = rewards + self.discount_factor * self.Q_target(next_states).max(1).values * (1 - dones)
 
-            # Calculate TD target
-            with torch.no_grad(): # No need to track gradients for target calculation
-                if done:
-                    td_target = torch.tensor(reward, dtype=torch.float32)
-                else:
-                    next_q_values = self._get_Q_target_values(next_state_features)
-                    td_target = torch.tensor(reward, dtype=torch.float32) + self.discount_factor * torch.max(next_q_values)
-
-            # Get the current Q-value prediction
-            q_values = self._get_Q_values(state_features)
-            q_value = q_values[action]
-
-            # Compute loss
-            loss = self.lossfn(td_target, q_value)
-
-            # Backprop
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-
-            # Store loss
-            losses.append(loss.item())
-
-        return losses
+        q = self.Q(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+        loss = self.lossfn(q, targets)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        return [loss.item()]
 
     def train_one_step(self):
         """Perform one step of training"""
 
-        # Build state representation
-        if self.preprocessor is not None:
-            self._current_state = self._env.render()
-            state_features = self.preprocessor.get_state_tensor(self._current_state)
-        else:
-            state_features = self.encode(self._current_state, self.state_dim)
+        # Try to get the last state from the experience buffer, if available
+        try:
+            if self._number_of_steps_taken_in_episode == 0:
+                raise IndexError("Starting a new episode, previous state in experience buffer is from past episode.")
+            state_features = self.eb.peak().next_state
+        except (IndexError, ValueError):
+            # If the buffer is empty, build state representation from env observation
+            if self.preprocessor is not None:
+                self._current_state = self._env.render()
+                state_features = self.preprocessor.get_state_tensor(self._current_state)
+            else:
+                state_features = self.encoder.encode(self._current_state)
 
         # Choose action based on current state
-        action = self.choose_action(state_features)
+        with torch.no_grad():
+            action = self.choose_action(state_features)
 
         # Step
-        next_state, reward, done, info, _ = self._env.step(action)
+        next_state, reward, done, trunc, info = self._env.step(action)
 
-        # Clip negative reward at -1, positive reward at 1
-        reward = -1.0 if reward < 0 else (1.0 if reward > 0 else 0.0)
+        # Clip reward for learning
+        if not self.reward_clip:
+            reward_clip = reward
+        elif self._env.spec.id in ["LunarLander-v2", "LunarLander-v3"]:
+            reward_clip = np.clip(reward, -1.0, 1.0)  # distinguish landing from flying
+        else:
+            # Reward signal (Mnih et al. 2015)
+            reward_clip = -1.0 if reward < 0 else (1.0 if reward > 0 else 0.0)
 
         # Build next state representation
         if self.preprocessor is not None:
             next_state = self._env.render()
             next_state_features = self.preprocessor.get_state_tensor(next_state)
         else:
-            next_state_features = self.encode(next_state, self.state_dim)
+            next_state_features = self.encoder.encode(next_state)
 
         # Store experience
-        self.eb.add(Experience(state_features, action, reward, next_state_features, done))
+        self.eb.add(Experience(state_features, action, reward_clip, next_state_features, done))
 
         # Perform Q updates
         losses = self.update_Q_network()
 
         # Increment step counter
         self._number_of_steps_taken_in_episode += 1
-
-        # Update current state
-        if done:
-            _episode_steps = self._number_of_steps_taken_in_episode
-            self._current_state, _ = self._env.reset()
-            self._number_of_steps_taken_in_episode = 0
-            return losses, reward, _episode_steps, self.exploration_rate, done
-        else:
-            self._current_state = next_state
+        self._global_step += 1
 
         # Update epsilon
         self.decay_exploration_rate()
 
         # Every C steps we update target Q
-        if self._number_of_steps_taken_in_episode % self.C == 0:
+        if self._global_step % self.C == 0:
             self._update_Q_target()
 
-        return losses, reward, self._number_of_steps_taken_in_episode, self.exploration_rate, done
+        # Update current state
+        if done or trunc:
+            _episode_steps = self._number_of_steps_taken_in_episode
+            if self.preprocessor is not None:
+                self.preprocessor.reset()  # reset the preprocessor state buffer
+            self._current_state, _ = self._env.reset()
+            self._number_of_steps_taken_in_episode = 0
+            self._held_action = None
+            self._hold_left = 0  # nao carrega a acao segurada entre episodios
+            return losses, reward, _episode_steps, self.exploration_rate, True  # done
+        else:
+            self._current_state = next_state
 
-    def train(
-            self,
-            number_of_episodes: int,
-            max_number_of_steps: int):
-        self.reset()
-
-        for _ in tqdm(range(number_of_episodes)):
-            done = False
-            i = 0
-
-            state, info = self._env.reset()
-            while i <= max_number_of_steps and not done:
-
-                # Build state representation
-                state_features = self.encode(state, self.state_dim)
-
-                # Choose action based on current state
-                action = self.choose_action(state_features)
-
-                # Step
-                next_state, reward, done, info, _ = self._env.step(action)
-
-                # Build next state representation
-                next_state_features = self.encode(next_state, self.state_dim)
-
-                # Store experience
-                self.eb.add(Experience(state_features, action, reward, next_state_features, done))
-
-                # Perform Q updates
-                self.update_Q_network()
-
-                # Every C steps we update target Q
-                if i % self.C == 0:
-                    self._update_Q_target()
-
-                # Step
-                state = next_state
-                i += 1
+        return losses, reward, self._number_of_steps_taken_in_episode, self.exploration_rate, False  # done

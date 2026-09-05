@@ -14,7 +14,7 @@ class QLearning:
             discount_factor: float = 0.99,  # Discount factor
             exploration_rate: float = 1.0,  # Exploration rate
             min_exploration_rate: float = 0.1,
-            exploration_decay: float = 0.99):
+            exploration_decay: float = 0.99,):
 
         self.number_of_states = number_of_states
         self.number_of_actions = number_of_actions
@@ -27,6 +27,7 @@ class QLearning:
         self.exploration_decay = exploration_decay
 
         self.actions = list(range(number_of_actions))
+        # in DQN -> Q is replaced by a neural network (Q initializes and gets overwritten by the neural network)
         self.Q = np.zeros( (number_of_states, number_of_actions) )
 
     def reset(self):
@@ -62,54 +63,3 @@ class QLearning:
             td_target = reward + self.discount_factor * self.Q[next_state][best_next_action_index]
         td_error = td_target - self.Q[state][action]
         self.Q[state][action] += self.learning_rate * td_error
-
-    def train(self, env, number_of_steps=50000, episode_length=None):
-        """Train the model for a specified number of steps"""
-        # Reset the environment
-        initial_state, info = env.reset()
-        state = initial_state
-
-        # Statistics
-        step_rewards = np.zeros(number_of_steps)
-        accumulated_rewards = np.zeros(number_of_steps)
-
-        # Execute episode
-        done = False
-        curr_episode_length = 0
-        for step in tqdm(range(number_of_steps)):
-
-            # Check if episode ended
-            if done:
-                # Reset the environment
-                initial_state, info = env.reset()
-                state = initial_state
-                done = False
-                curr_episode_length = 0
-
-            # Choose an action based on the current state
-            action = self.choose_action(state)  # policy over actions
-
-            # Step the env
-            next_state, reward, done, info, _ = env.step(action)
-
-            # Statistics
-            step_rewards[step]
-            accumulated_rewards[step] = accumulated_rewards[step - 1] + reward if step > 0 else reward
-
-            # Store the experience in the buffer if it exists
-            if self.eb is not None and not done:
-                self.eb.add((state, action, reward, next_state))
-
-            # Update the Q-value for the option
-            self.update_q_value(state, action, reward, next_state, done)
-
-            # Decay
-            self.decay_exploration_rate()
-
-            # Step
-            state = next_state
-
-            if episode_length is not None and curr_episode_length >= episode_length:
-                done = True
-
-        return step_rewards, accumulated_rewards
