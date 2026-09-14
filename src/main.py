@@ -152,16 +152,17 @@ def run_job(config: config.JobConfig):
     agent = DeepQLearning(
         env=env,
         Q_network=net,
-        eb_size=10000,
-        batch_size=32,
-        update_Q_target_every=100,
+        eb_size=config.eb_size,
+        batch_size=config.batch_size,
+        update_Q_target_every=config.target_network_update_freq,
         number_of_states=in_size,
         number_of_actions=env.action_space.n,
         learning_rate=config.lr,
-        discount_factor=0.99,
-        exploration_rate=1.0,
-        min_exploration_rate=0.1,
+        discount_factor=config.gamma,
+        exploration_rate=config.epsilon,
+        min_exploration_rate=config.min_epsilon,
         exploration_decay=config.exploration_decay,
+        gradient_momentum=config.grad_momentum,
         preprocessor=preprocessor,
         reward_clip=config.reward_clip,
         action_repeat=config.action_repeat,
@@ -189,7 +190,7 @@ def run_job(config: config.JobConfig):
         episode_reward = 0
         while not done:
             # Perform a single training step
-            losses, reward, steps, epsilon, done = agent.train_one_step()
+            loss, reward, steps, epsilon, done = agent.train_one_step()
 
             # Accumulate reward
             episode_reward += reward
@@ -201,7 +202,7 @@ def run_job(config: config.JobConfig):
             run.log({
                 "global_step": global_step,  # x-axis
                 "epsilon": epsilon,
-                "loss": np.average(losses)
+                "loss": loss
             })
 
             # Increment global step counter

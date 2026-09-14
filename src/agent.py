@@ -39,7 +39,8 @@ class DeepQLearning(QLearning):
             reward_clip: bool = True,
             action_repeat: int = 1,  # k=1 one action per step, k>1 hold action for k steps
             scale_exploration: bool = True,  # epsilon como fracao do tempo explorando
-            ):
+            gradient_momentum: float = 0.0,
+            optimizer: str = "SGD",):  # SGD | Adam | RMSprop
 
         super().__init__(
             number_of_states,
@@ -89,8 +90,9 @@ class DeepQLearning(QLearning):
         self._Q_initial = Q_network.copy()  # Keep a copy of the initial Q-network for resets
 
         # Optim
-        # Use self.Q.parameters() instead of model.parameters()
-        self.optimizer = optim.SGD(self.Q.parameters(), lr=learning_rate) # Used the learning_rate from init
+        self.optimizer_name = optimizer
+        self.gradient_momentum = gradient_momentum
+        self.optimizer = self._build_optimizer()
 
         # Loss
         self.lossfn = nn.MSELoss()
@@ -113,7 +115,7 @@ class DeepQLearning(QLearning):
         self.Q = self._Q_initial.copy()
         self.Q_target = self._Q_initial.copy()
         # Reset optimizer
-        self.optimizer = optim.SGD(self.Q.parameters(), lr=self.learning_rate)
+        self.optimizer = self._build_optimizer()
         # Reset replay buffer
         self.eb = ExperienceBuffer(self.eb.max_lenght)
         # Reset preprocessor state buffer if it exists
@@ -127,6 +129,35 @@ class DeepQLearning(QLearning):
         # Reset da acao segurada
         self._held_action = None
         self._hold_left = 0
+
+    def _build_optimizer(self) -> optim.Optimizer:
+        """O otimizador sobre os pesos ATUAIS de self.Q.
+
+        Precisa ser reconstruido a cada reset(): reset() troca self.Q por uma
+        copia nova, e um otimizador antigo continuaria apontando para a rede
+        descartada.
+
+        RMSprop aqui usa os defaults do torch (alpha=0.99, eps=1e-8).  O DQN
+        original (Mnih et al. 2015) usa alpha=0.95, eps=0.01 e momentum=0.95,
+        que e uma configuracao bem diferente; para reproduzi-la passe
+        gradient_momentum=0.95 e ajuste os demais aqui.
+        """
+        name = self.optimizer_name.lower()
+        if name == "sgd":
+            return optim.SGD(
+                self.Q.parameters(),
+                lr=self.learning_rate,
+                momentum=self.gradient_momentum,
+            )
+        if name == "adam":
+            return optim.Adam(self.Q.parameters(), lr=self.learning_rate)
+        if name == "rmsprop":
+            return optim.RMSprop(
+                self.Q.parameters(),
+                lr=self.learning_rate,
+                momentum=self.gradient_momentum,
+            )
+        raise ValueError(f"Otimizador desconhecido: {self.optimizer_name!r} (SGD | Adam | RMSprop)")
 
     def _update_Q_target(self):
         self.Q_target = self.Q.copy()
@@ -207,7 +238,7 @@ class DeepQLearning(QLearning):
         """Update the Q-value for the given state and option index"""
 
         # Store losses for logging
-        losses = []
+        # losses = []
 
         # Store ys and yhats for loss calculation
         # ys = []
@@ -232,7 +263,7 @@ class DeepQLearning(QLearning):
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
-        return [loss.item()]
+        return loss.item()
 
     def train_one_step(self):
         """Perform one step of training"""
@@ -277,7 +308,7 @@ class DeepQLearning(QLearning):
         self.eb.add(Experience(state_features, action, reward_clip, next_state_features, done))
 
         # Perform Q updates
-        losses = self.update_Q_network()
+        loss = self.update_Q_network()
 
         # Increment step counter
         self._number_of_steps_taken_in_episode += 1
@@ -299,8 +330,8 @@ class DeepQLearning(QLearning):
             self._number_of_steps_taken_in_episode = 0
             self._held_action = None
             self._hold_left = 0  # nao carrega a acao segurada entre episodios
-            return losses, reward, _episode_steps, self.exploration_rate, True  # done
+            return loss, reward, _episode_steps, self.exploration_rate, True  # done
         else:
             self._current_state = next_state
 
-        return losses, reward, self._number_of_steps_taken_in_episode, self.exploration_rate, False  # done
+        return loss, reward, self._number_of_steps_taken_in_episode, self.exploration_rate, False  # done

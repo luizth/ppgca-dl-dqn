@@ -89,6 +89,10 @@ class MLP(nn.Module):
         self.net = nn.Sequential(*layers)
         self.net.apply(weights_init)
 
+    def architecture(self):
+        """Return the architecture of the MLP network."""
+        return [layer for layer in self.net if isinstance(layer, nn.Linear)]
+
     def copy(self):
         return copy.deepcopy(self)
 

@@ -4,18 +4,25 @@ from dataclasses import dataclass
 
 @dataclass
 class JobConfig:
-    ds: str
+    ds: str  # which environment to run the job on
     eps: int
+    batch_size: int
+    eb_size: int
+    target_network_update_freq: int
+    gamma: float
+    action_repeat: int  # k: passos que a acao exploratoria e mantida
+    scale_exploration: bool  # epsilon = fracao do tempo explorando
     lr: float
+    grad_momentum: float  # 0.0 é nenhum somentum
+    epsilon: float
     exploration_decay: float
+    min_epsilon: float
     use_conv: bool
     name: str
     arch: str = "DQN_Original"
     optim: str = "SGD"
     reward_clip: bool = True
     seed: int = 0
-    scale_exploration: bool = True  # epsilon = fracao do tempo explorando
-    action_repeat: int = 1  # k: passos que a acao exploratoria e mantida
 
     def __post_init__(self):
         if not self.name:
@@ -23,6 +30,25 @@ class JobConfig:
 
 
 def get():
+    return JobConfig(
+        name="MountainCar-v0-MLP-" + str(uuid.uuid4())[:8],
+        ds="MountainCar-v0",
+        eps=3_000,
+        batch_size=32,
+        eb_size=10_000,
+        target_network_update_freq=100,
+        gamma=0.99,
+        action_repeat=10,
+        scale_exploration=True,
+        lr=0.001,
+        grad_momentum=0.0,
+        epsilon=1.0,
+        exploration_decay=0.99,
+        min_epsilon=0.1,
+        use_conv=False,
+    ),
+
+def other():
     """Jobs do experimento: os quatro ambientes de controle.
 
     O decay do epsilon e aplicado por passo (agent.py:203), mas as curvas do
