@@ -90,11 +90,6 @@ class DeepQLearning(QLearning):
         self._Q_initial = Q_network.copy()  # Keep a copy of the initial Q-network for resets
 
         # Optim
-        # O campo `optim` do JobConfig existia mas nao era lido: o otimizador
-        # estava fixo em SGD aqui.  Agora vem por parametro, e tanto o __init__
-        # quanto o reset() passam pelo mesmo _build_optimizer -- antes o reset
-        # recriava o SGD sem o momentum, entao gradient_momentum sumia calado
-        # no primeiro reset().
         self.optimizer_name = optimizer
         self.gradient_momentum = gradient_momentum
         self.optimizer = self._build_optimizer()
@@ -139,8 +134,8 @@ class DeepQLearning(QLearning):
         """O otimizador sobre os pesos ATUAIS de self.Q.
 
         Precisa ser reconstruido a cada reset(): reset() troca self.Q por uma
-        copia nova, e um otimizador antigo continuaria apontando para os
-        tensores da rede descartada -- os passos nao chegariam na rede em uso.
+        copia nova, e um otimizador antigo continuaria apontando para a rede
+        descartada.
 
         RMSprop aqui usa os defaults do torch (alpha=0.99, eps=1e-8).  O DQN
         original (Mnih et al. 2015) usa alpha=0.95, eps=0.01 e momentum=0.95,
