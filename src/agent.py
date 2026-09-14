@@ -39,7 +39,8 @@ class DeepQLearning(QLearning):
             reward_clip: bool = True,
             action_repeat: int = 1,  # k=1 one action per step, k>1 hold action for k steps
             scale_exploration: bool = True,  # epsilon como fracao do tempo explorando
-            gradient_momentum: float = 0.0,):
+            gradient_momentum: float = 0.0,
+            optimizer: str = "SGD",):  # SGD | Adam | RMSprop
 
         super().__init__(
             number_of_states,
@@ -89,12 +90,14 @@ class DeepQLearning(QLearning):
         self._Q_initial = Q_network.copy()  # Keep a copy of the initial Q-network for resets
 
         # Optim
-        # Use self.Q.parameters() instead of model.parameters()
-        self.optimizer = optim.SGD(
-            self.Q.parameters(),
-            lr=learning_rate,
-            momentum=gradient_momentum
-        ) # Used the learning_rate from init
+        # O campo `optim` do JobConfig existia mas nao era lido: o otimizador
+        # estava fixo em SGD aqui.  Agora vem por parametro, e tanto o __init__
+        # quanto o reset() passam pelo mesmo _build_optimizer -- antes o reset
+        # recriava o SGD sem o momentum, entao gradient_momentum sumia calado
+        # no primeiro reset().
+        self.optimizer_name = optimizer
+        self.gradient_momentum = gradient_momentum
+        self.optimizer = self._build_optimizer()
 
         # Loss
         self.lossfn = nn.MSELoss()
@@ -117,7 +120,7 @@ class DeepQLearning(QLearning):
         self.Q = self._Q_initial.copy()
         self.Q_target = self._Q_initial.copy()
         # Reset optimizer
-        self.optimizer = optim.SGD(self.Q.parameters(), lr=self.learning_rate)
+        self.optimizer = self._build_optimizer()
         # Reset replay buffer
         self.eb = ExperienceBuffer(self.eb.max_lenght)
         # Reset preprocessor state buffer if it exists
@@ -131,6 +134,35 @@ class DeepQLearning(QLearning):
         # Reset da acao segurada
         self._held_action = None
         self._hold_left = 0
+
+    def _build_optimizer(self) -> optim.Optimizer:
+        """O otimizador sobre os pesos ATUAIS de self.Q.
+
+        Precisa ser reconstruido a cada reset(): reset() troca self.Q por uma
+        copia nova, e um otimizador antigo continuaria apontando para os
+        tensores da rede descartada -- os passos nao chegariam na rede em uso.
+
+        RMSprop aqui usa os defaults do torch (alpha=0.99, eps=1e-8).  O DQN
+        original (Mnih et al. 2015) usa alpha=0.95, eps=0.01 e momentum=0.95,
+        que e uma configuracao bem diferente; para reproduzi-la passe
+        gradient_momentum=0.95 e ajuste os demais aqui.
+        """
+        name = self.optimizer_name.lower()
+        if name == "sgd":
+            return optim.SGD(
+                self.Q.parameters(),
+                lr=self.learning_rate,
+                momentum=self.gradient_momentum,
+            )
+        if name == "adam":
+            return optim.Adam(self.Q.parameters(), lr=self.learning_rate)
+        if name == "rmsprop":
+            return optim.RMSprop(
+                self.Q.parameters(),
+                lr=self.learning_rate,
+                momentum=self.gradient_momentum,
+            )
+        raise ValueError(f"Otimizador desconhecido: {self.optimizer_name!r} (SGD | Adam | RMSprop)")
 
     def _update_Q_target(self):
         self.Q_target = self.Q.copy()
