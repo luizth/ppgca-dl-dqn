@@ -162,7 +162,7 @@ def run_job(config: config.JobConfig):
         exploration_rate=config.epsilon,
         min_exploration_rate=config.min_epsilon,
         exploration_decay=config.exploration_decay,
-        gradient_momentum=config.gradient_momentum,
+        gradient_momentum=config.grad_momentum,
         preprocessor=preprocessor,
         reward_clip=config.reward_clip,
         action_repeat=config.action_repeat,
